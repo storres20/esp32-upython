@@ -23,6 +23,9 @@ PASSWORD = "12345678"
 DHT22_PIN = 4
 DS18B20_PIN = 5
 WIFI_LED_PIN = 2
+# 🆕 Sensor magnético MC-38 y LED
+MC38_SENSOR_PIN = 15  # Pin del sensor MC-38
+MC38_LED_PIN = 13     # Pin del LED para puerta
 
 # Configuración OLED
 OLED_SCL_PIN = 22
@@ -47,18 +50,25 @@ SENSOR_INTERVAL = 2000
 WIFI_CHECK_INTERVAL = 10000
 LED_BLINK_INTERVAL = 500
 OLED_UPDATE_INTERVAL = 1000
+DOOR_CHECK_INTERVAL = 100  # 🆕 Verificar puerta cada 100ms
 
 # Variables de tiempo
 last_sensor_read = 0
 last_wifi_check = 0
 last_led_blink = 0
 last_oled_update = 0
+last_door_check = 0  # 🆕
 
 # Estado del sistema
 wifi_connected = False
 wifi_reconnecting = False
 led_state = False
 wifi_retry_count = 0
+
+# 🆕 Estado de la puerta
+door_closed = False
+door_state_changed = False
+door_initialized = False  # Para detectar estado inicial
 
 # Funciones para barras WiFi
 def get_wifi_signal_bars(rssi):
@@ -121,6 +131,11 @@ ds_sensor = ds18x20.DS18X20(onewire.OneWire(ds_pin))
 # Inicializar LED WiFi
 wifi_led = machine.Pin(WIFI_LED_PIN, machine.Pin.OUT)
 wifi_led.off()
+
+# 🆕 Inicializar sensor MC-38 y LED de puerta
+mc38_sensor = machine.Pin(MC38_SENSOR_PIN, machine.Pin.IN, machine.Pin.PULL_DOWN)
+mc38_led = machine.Pin(MC38_LED_PIN, machine.Pin.OUT)
+mc38_led.off()
 
 # Datos de sensores
 class SensorData:
@@ -224,6 +239,7 @@ def initialize_oled():
         oled.text_small("MHTv2-25-001", 0, 12, 'small')
         oled.text_small("Sistema de Monitoreo", 0, 24, 'small')
         oled.text_small("ESP32 + Sensores", 0, 36, 'small')
+        oled.text_small("Sensor MC-38 activo", 0, 48, 'small')
         oled.show()
         print("✓ Display OLED inicializado")
         time.sleep(2)
@@ -234,10 +250,21 @@ def initialize_oled():
 
 def initialize_sensors():
     """Inicializa todos los sensores"""
-    global ds_devices
+    global ds_devices, door_closed, door_initialized
 
     print("Inicializando sensores...")
     print("- DHT22 en pin", DHT22_PIN)
+    print(f"- MC-38 en pin {MC38_SENSOR_PIN} (LED en pin {MC38_LED_PIN})")
+
+    # 🆕 Detectar estado inicial de la puerta
+    door_closed = mc38_sensor.value()
+    if door_closed:
+        mc38_led.off()  # Puerta cerrada = LED apagado
+        print(f"  ✓ Estado inicial puerta: CERRADA (LED OFF)")
+    else:
+        mc38_led.on()   # Puerta abierta = LED encendido
+        print(f"  ⚠ Estado inicial puerta: ABIERTA (LED ON)")
+    door_initialized = True
 
     ds_devices = ds_sensor.scan()
     if ds_devices:
@@ -323,17 +350,19 @@ def update_oled_display():
             hum_in = "Humedad: ERROR"
         oled.text_small(hum_in, 0, 45, 'small')
 
-        # Línea 6: Estado WiFi con BARRAS
+
+        # Línea 7: Estado WiFi con BARRAS
         if wlan and wifi_connected:
             try:
                 rssi = wlan.status('rssi')
                 bars = get_wifi_signal_bars(rssi)
                 barras_visual = crear_barras_wifi(bars)
+                # Mostrar de forma compacta
                 status_text = f"WiFi: {barras_visual} {bars}/6"
             except:
-                status_text = "WiFi: ERROR"
+                status_text = "WiFi: ERR"
         elif wifi_reconnecting:
-            status_text = "WiFi: REconectando..."
+            status_text = "WiFi: Recon..."
         else:
             status_text = "WiFi: OFF"
 
@@ -374,6 +403,29 @@ def read_sensors_event():
             current_data.ds18b20_valid = False
     else:
         current_data.ds18b20_valid = False
+
+# 🆕 Evento para verificar sensor de puerta (LÓGICA INVERTIDA)
+def check_door_sensor():
+    """Evento: Verificar estado del sensor magnético MC-38"""
+    global door_closed, door_state_changed
+
+    # Leer estado del sensor (1 = imán cerca/cerrado, 0 = imán lejos/abierto)
+    current_state = mc38_sensor.value()
+
+    # Detectar cambio de estado
+    if current_state != door_closed:
+        door_state_changed = True
+        door_closed = current_state
+
+        # 🆕 LÓGICA INVERTIDA: encendido = abierto, apagado = cerrado
+        if door_closed:
+            mc38_led.off()  # Puerta CERRADA = LED OFF
+            print("\n🚪 PUERTA CERRADA - LED APAGADO")
+        else:
+            mc38_led.on()   # Puerta ABIERTA = LED ON
+            print("\n⚠️  PUERTA ABIERTA - LED ENCENDIDO")
+    else:
+        door_state_changed = False
 
 def check_wifi_event():
     """Evento: Verificar estado WiFi y manejar reconexión con protección de errores"""
@@ -453,6 +505,9 @@ def display_sensor_data():
     else:
         ds_str = "DS18B20: ERROR"
 
+    # 🆕 Estado de la puerta
+    door_str = "PUERTA: CERRADA" if door_closed else "PUERTA: ABIERTA"
+
     # Mostrar tiempo real en consola
     if time_synced:
         date_str, time_str = get_formatted_datetime()
@@ -481,18 +536,19 @@ def display_sensor_data():
     except:
         wifi_str = "WiFi: ERROR"
 
-    # Mostrar información
-    print(f"{timestamp_str} {dht_str} | {ds_str} | {oled_status}")
+    # Mostrar información (incluyendo puerta)
+    print(f"{timestamp_str} {dht_str} | {ds_str} | {door_str} | {oled_status}")
     print(f"          {wifi_str} | {real_time_str}")
 
 def main():
     """Función principal con arquitectura de eventos"""
-    global last_sensor_read, last_wifi_check, last_oled_update
+    global last_sensor_read, last_wifi_check, last_oled_update, last_door_check
 
-    print("=== ESP32 Monitor con BARRAS WiFi ===")
-    print("DHT22 + DS18B20 + OLED SSD1309 + NTP")
+    print("=== ESP32 Monitor con BARRAS WiFi + MC-38 ===")
+    print("DHT22 + DS18B20 + OLED SSD1309 + NTP + MC-38")
     print("Zona Horaria: UTC-5 (Perú)")
     print("Barras WiFi: 6 niveles de señal")
+    print("Sensor Puerta MC-38: Normalmente Abierto (NA)")
     print("MicroPython - Un solo núcleo\n")
 
     # Inicializar componentes
@@ -505,7 +561,7 @@ def main():
     else:
         print("✓ WiFi configurado - sincronización NTP disponible")
 
-    print("Sistema iniciado - Barras WiFi habilitadas")
+    print("Sistema iniciado - Todos los sensores activos")
     if not oled_initialized:
         print("NOTA: OLED no disponible - mostrando en consola")
     print("Presiona Ctrl+C para detener\n")
@@ -515,6 +571,7 @@ def main():
     last_sensor_read = start_time
     last_wifi_check = start_time
     last_oled_update = start_time
+    last_door_check = start_time
 
     try:
         while True:
@@ -543,11 +600,17 @@ def main():
             if wlan:
                 check_ntp_sync()
 
+            # 🆕 EVENTO 6: Verificar sensor de puerta cada 100ms
+            if time.ticks_diff(current_time, last_door_check) >= DOOR_CHECK_INTERVAL:
+                check_door_sensor()
+                last_door_check = current_time
+
             time.sleep_ms(10)
 
     except KeyboardInterrupt:
         print("\n\nDeteniendo programa...")
         wifi_led.off()
+        mc38_led.off()  # 🆕 Apagar LED de puerta
         if oled_initialized:
             oled.fill(0)
             oled.text_small("Sistema", 0, 20, 'small')
@@ -559,6 +622,7 @@ def main():
     except Exception as e:
         print(f"\nError crítico: {e}")
         wifi_led.off()
+        mc38_led.off()  # 🆕 Apagar LED de puerta
 
 if __name__ == "__main__":
     main()

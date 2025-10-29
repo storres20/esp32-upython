@@ -21,8 +21,8 @@ except ImportError:
     print("⚠ Librería ssd1306 no encontrada")
 
 # Configuración
-SSID = "motog35"
-PASSWORD = "12345678"
+SSID = "MACHETE"
+PASSWORD = "machete23"
 WEBSOCKET_URL = "wss://bio-data-production.up.railway.app/"
 USERNAME = "MHTv2-25-001"
 
@@ -414,13 +414,15 @@ def network_thread():
                                 "dsTemperature": round(current_data.ds18b20_temp, 1) if current_data.ds18b20_valid else 0.0,
                                 "temperature": round(current_data.dht_temp, 1) if current_data.dht_valid else 0.0,
                                 "humidity": int(round(current_data.dht_humidity, 0)) if current_data.dht_valid else 0.0,
-                                "datetime": datetime_utc
+                                "datetime": datetime_utc,
+                                "doorStatus": "closed" if door_closed else "open"
                             }
 
                         json_str = json.dumps(data)
 
                         if ws.send(json_str):
-                            print(f"📤 WS | T.OUT: {data['dsTemperature']}°C | T.IN: {data['temperature']}°C | H: {data['humidity']}%")
+                            door_icon = "🚪✅" if door_closed else "🚪⚠️"
+                            print(f"📤 WS | T.OUT: {data['dsTemperature']}°C | T.IN: {data['temperature']}°C | H: {data['humidity']}% | {door_icon}")
                         else:
                             print("❌ Error enviando datos")
                             ws.connected = False
